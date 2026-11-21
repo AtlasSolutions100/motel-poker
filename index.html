@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Motel Poker</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin:0; font-family: -apple-system, system-ui, sans-serif; background:#0b3d2e; color:#fff; min-height:100vh; display:flex; flex-direction:column; }
+  header { text-align:center; padding:10px; font-weight:800; letter-spacing:1px; background:#072a20; }
+  .wrap { flex:1; display:flex; flex-direction:column; gap:10px; padding:10px; max-width:520px; width:100%; margin:0 auto; }
+  .player { background:rgba(0,0,0,.25); border-radius:14px; padding:10px; border:2px solid transparent; }
+  .player.active { border-color:#ffd54a; box-shadow:0 0 12px #ffd54a55; }
+  .pname { display:flex; justify-content:space-between; align-items:center; font-weight:700; }
+  .chips { color:#ffd54a; }
+  .bet { font-size:13px; opacity:.85; min-height:18px; }
+  .cards { display:flex; gap:6px; margin-top:6px; min-height:72px; justify-content:center; }
+  .card { width:50px; height:72px; background:#fff; color:#111; border-radius:7px; display:flex; flex-direction:column; align-items:center; justify-content:center; font-weight:800; font-size:20px; box-shadow:0 2px 4px #0006; }
+  .card.red { color:#d32f2f; }
+  .card.back { background:repeating-linear-gradient(45deg,#b71c1c,#b71c1c 5px,#8e0000 5px,#8e0000 10px); border:2px solid #fff; }
+  .card .s { font-size:22px; line-height:1; }
+  .board { background:#0f5a42; border-radius:50px / 30px; padding:14px 6px; text-align:center; border:4px solid #5d3a1a; }
+  .pot { font-weight:800; color:#ffd54a; margin-bottom:4px; }
+  .msg { text-align:center; min-height:22px; font-size:15px; }
+  .controls { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  button { font-size:17px; font-weight:700; padding:14px; border:none; border-radius:12px; color:#fff; background:#1565c0; }
+  button:disabled { opacity:.35; }
+  .fold { background:#c62828; } .call { background:#2e7d32; } .raise { background:#ef6c00; } .allin { background:#6a1b9a; }
+  .raiseRow { grid-column:1 / span 2; display:flex; gap:8px; align-items:center; }
+  .raiseRow input[type=range] { flex:1; }
+  .raiseAmt { min-width:110px; text-align:right; font-weight:700; color:#ffd54a; }
+  .quick { grid-column:1 / span 2; display:flex; gap:6px; }
+  .quick button { flex:1; padding:8px; font-size:13px; background:#37474f; }
+  .overlay { position:fixed; inset:0; background:#072a20f2; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:16px; z-index:10; padding:20px; text-align:center; }
+  .overlay h2 { margin:0; font-size:28px; }
+  .overlay input { font-size:18px; padding:10px; border-radius:10px; border:none; width:220px; text-align:center; }
+  .hidden { display:none !important; }
+  .small { font-size:13px; opacity:.7; }
+  .log { font-size:12px; opacity:.7; text-align:center; }
+</style>
+</head>
+<body>
+<header>♠ MOTEL POKER ♥ <span class="small">Texas Hold'em</span></header>
+
+<div class="wrap">
+  <div class="player" id="p1box">
+    <div class="pname"><span id="p1name">Mom</span><span class="chips" id="p1chips"></span></div>
+    <div class="bet" id="p1bet"></div>
+    <div class="cards" id="p1cards"></div>
+  </div>
+
+  <div class="board">
+    <div class="pot" id="pot">Pot: 0</div>
+    <div class="cards" id="board"></div>
+    <div class="small" id="blinds"></div>
+  </div>
+
+  <div class="player" id="p0box">
+    <div class="pname"><span id="p0name">Koby</span><span class="chips" id="p0chips"></span></div>
+    <div class="bet" id="p0bet"></div>
+    <div class="cards" id="p0cards"></div>
+  </div>
+
+  <div class="msg" id="msg"></div>
+
+  <div class="controls" id="controls">
+    <button class="fold" id="bFold">Fold</button>
+    <button class="call" id="bCall">Check</button>
+    <div class="quick">
+      <button data-f="0.5">½ Pot</button><button data-f="1">Pot</button><button data-f="2">2× Pot</button>
+    </div>
+    <div class="raiseRow">
+      <input type="range" id="raiseSlider" min="0" max="100" step="1">
+      <span class="raiseAmt" id="raiseAmt"></span>
+    </div>
+    <button class="raise" id="bRaise">Raise</button>
+    <button class="allin" id="bAllin">All In</button>
+  </div>
+  <button id="bNext" class="hidden">Next Hand ▶</button>
+  <div class="log" id="log"></div>
+</div>
+
+<!-- Start screen -->
+<div class="overlay" id="startScreen">
+  <h2>♠ Motel Poker ♦</h2>
+  <div>Heads-up Texas Hold'em<br>1,500,000 chips each</div>
+  <input id="n0" value="Koby" maxlength="12">
+  <input id="n1" value="Mom" maxlength="12">
+  <button id="bStart">Deal 'Em</button>
+  <button id="bResume" class="hidden" style="background:#37474f">Resume Saved Game</button>
+</div>
+
+<!-- Pass screen -->
+<div class="overlay hidden" id="passScreen">
+  <h2 id="passTitle">Pass to Mom</h2>
+  <div class="small">No peeking 👀</div>
+  <button id="bReveal">I'm Mom — show my cards</button>
+</div>
+
+<!-- Game over -->
+<div class="overlay hidden" id="overScreen">
+  <h2 id="overTitle"></h2>
+  <button id="bRestart">New Game</button>
+</div>
+
+<script>
+const START = 1500000;
+const SUITS = ['♠','♥','♦','♣'];
+const RANKS = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
+let G = null;
+const $ = id => document.getElementById(id);
+const fmt = n => n.toLocaleString();
+
+function newDeck(){ const d=[]; for(let s=0;s<4;s++) for(let r=0;r<13;r++) d.push({r,s}); for(let i=d.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[d[i],d[j]]=[d[j],d[i]];} return d; }
+
+// ---------- Hand evaluation ----------
+function eval5(cards){
+  const rs = cards.map(c=>c.r).sort((a,b)=>b-a);
+  const flush = cards.every(c=>c.s===cards[0].s);
+  const uniq = [...new Set(rs)];
+  let straightHigh = -1;
+  if(uniq.length===5){
+    if(rs[0]-rs[4]===4) straightHigh=rs[0];
+    else if(rs[0]===12 && rs[1]===3) straightHigh=3; // wheel
+  }
+  const counts={}; rs.forEach(r=>counts[r]=(counts[r]||0)+1);
+  const groups=Object.entries(counts).map(([r,c])=>[c,+r]).sort((a,b)=>b[0]-a[0]||b[1]-a[1]);
+  const kick=groups.map(g=>g[1]);
+  if(straightHigh>=0 && flush) return [8,straightHigh];
+  if(groups[0][0]===4) return [7,...kick];
+  if(groups[0][0]===3 && groups[1][0]===2) return [6,...kick];
+  if(flush) return [5,...rs];
+  if(straightHigh>=0) return [4,straightHigh];
+  if(groups[0][0]===3) return [3,...kick];
+  if(groups[0][0]===2 && groups[1][0]===2) return [2,...kick];
+  if(groups[0][0]===2) return [1,...kick];
+  return [0,...rs];
+}
+function cmp(a,b){ for(let i=0;i<Math.max(a.length,b.length);i++){ const d=(a[i]||0)-(b[i]||0); if(d) return d; } return 0; }
+function best7(cards){
+  let best=null;
+  for(let i=0;i<cards.length;i++) for(let j=i+1;j<cards.length;j++){
+    const five=cards.filter((_,k)=>k!==i&&k!==j);
+    const v=eval5(five); if(!best||cmp(v,best)>0) best=v;
+  }
+  return best;
+}
+const HAND_NAMES=['High Card','Pair','Two Pair','Three of a Kind','Straight','Flush','Full House','Four of a Kind','Straight Flush'];
+function handName(v){ if(v[0]===8&&v[1]===12) return 'Royal Flush'; return HAND_NAMES[v[0]]; }
+
+// ---------- Game flow ----------
+function save(){ try{ localStorage.setItem('motelPoker', JSON.stringify(G)); }catch(e){} }
+function load(){ try{ return JSON.parse(localStorage.getItem('motelPoker')); }catch(e){ return null; } }
+
+function newGame(n0,n1){
+  G = { names:[n0||'Player 1', n1||'Player 2'], chips:[START,START], dealer:1, handNum:0, sb:5000, bb:10000 };
+  newHand();
+}
+
+function newHand(){
+  G.handNum++;
+  // blinds go up every 10 hands
+  const level = Math.floor((G.handNum-1)/10);
+  G.sb = 5000 * Math.pow(2, level); G.bb = G.sb*2;
+  G.dealer = 1 - G.dealer;
+  G.deck = newDeck();
+  G.hole = [[G.deck.pop(),G.deck.pop()],[G.deck.pop(),G.deck.pop()]];
+  G.board = []; G.bets=[0,0]; G.pot=0; G.folded=null; G.street=0; G.done=false; G.showdown=false;
+  G.contrib=[0,0];
+  // heads-up: dealer posts SB and acts first preflop
+  const sbP=G.dealer, bbP=1-G.dealer;
+  post(sbP, Math.min(G.sb, G.chips[sbP]));
+  post(bbP, Math.min(G.bb, G.chips[bbP]));
+  G.toAct = sbP; G.acted=[false,false]; G.lastRaise = G.bb;
+  G.log = `Hand #${G.handNum} — ${G.names[sbP]} posts ${fmt(G.sb)}, ${G.names[bbP]} posts ${fmt(G.bb)}`;
+  G.msg='';
+  G.revealed = -1;
+  checkAutoRunout() || askPass();
+  save();
+}
+
+function post(p, amt){ amt=Math.min(amt,G.chips[p]); G.chips[p]-=amt; G.bets[p]+=amt; G.contrib[p]+=amt; }
+
+function act(type, amount){
+  const p=G.toAct, o=1-p;
+  const toCall = G.bets[o]-G.bets[p];
+  if(type==='fold'){ G.folded=p; G.log=`${G.names[p]} folds`; return endHand(); }
+  if(type==='call'){
+    if(toCall>0){ const before=G.chips[p]; post(p,toCall); G.log=`${G.names[p]} calls ${fmt(before-G.chips[p])}`; }
+    else G.log=`${G.names[p]} checks`;
+  }
+  if(type==='raise'){ // amount = total bet to
+    G.lastRaise = Math.max(G.lastRaise, amount - G.bets[o]);
+    post(p, amount - G.bets[p]);
+    G.log = G.chips[p]===0 ? `${G.names[p]} is ALL IN for ${fmt(G.bets[p])}!` : `${G.names[p]} ${toCall>0||G.street===0?'raises':'bets'} to ${fmt(G.bets[p])}`;
+    G.acted[o]=false;
+  }
+  G.acted[p]=true;
+  const over = (G.acted[0]&&G.acted[1]&&G.bets[0]===G.bets[1])
+            || (G.chips[p]===0 && G.bets[p]<=G.bets[o])
+            || (G.chips[o]===0 && G.bets[p]>=G.bets[o]);
+  if(over) nextStreet();
+  else { G.toAct=o; askPass(); }
+  save();
+}
+
+function nextStreet(){
+  // return uncalled chips
+  if(G.bets[0]!==G.bets[1]){
+    const hi = G.bets[0]>G.bets[1]?0:1, diff=G.bets[hi]-G.bets[1-hi];
+    G.chips[hi]+=diff; G.bets[hi]-=diff; G.contrib[hi]-=diff;
+  }
+  G.pot += G.bets[0]+G.bets[1]; G.bets=[0,0]; G.acted=[false,false]; G.lastRaise=G.bb;
+  G.street++;
+  if(G.street===1){ G.deck.pop(); G.board.push(G.deck.pop(),G.deck.pop(),G.deck.pop()); }
+  else if(G.street===2||G.street===3){ G.deck.pop(); G.board.push(G.deck.pop()); }
+  else return showdown();
+  if(checkAutoRunout()) return;
+  G.toAct = 1-G.dealer; // BB acts first postflop
+  askPass();
+}
+
+function checkAutoRunout(){
+  if(G.chips[0]===0||G.chips[1]===0){
+    // someone all-in and bets matched -> run it out
+    if(G.bets[0]===G.bets[1] || G.chips[G.bets[0]>G.bets[1]?1:0]===0){
+      while(G.board.length<5){ G.deck.pop(); G.board.push(G.deck.pop()); }
+      if(G.bets[0]!==G.bets[1]){ const hi=G.bets[0]>G.bets[1]?0:1,d=G.bets[hi]-G.bets[1-hi]; G.chips[hi]+=d; G.bets[hi]-=d; }
+      G.pot+=G.bets[0]+G.bets[1]; G.bets=[0,0];
+      showdown(); return true;
+    }
+  }
+  return false;
+}
+
+function showdown(){
+  G.showdown=true;
+  const v0=best7([...G.hole[0],...G.board]), v1=best7([...G.hole[1],...G.board]);
+  const c=cmp(v0,v1);
+  if(c>0){ G.chips[0]+=G.pot; G.msg=`🏆 ${G.names[0]} wins ${fmt(G.pot)} with ${handName(v0)}<br><span class="small">${G.names[1]}: ${handName(v1)}</span>`; }
+  else if(c<0){ G.chips[1]+=G.pot; G.msg=`🏆 ${G.names[1]} wins ${fmt(G.pot)} with ${handName(v1)}<br><span class="small">${G.names[0]}: ${handName(v0)}</span>`; }
+  else { const h=Math.floor(G.pot/2); G.chips[0]+=h; G.chips[1]+=G.pot-h; G.msg=`🤝 Split pot — both have ${handName(v0)}`; }
+  G.pot=0; G.done=true; G.revealed=-1; save(); render();
+}
+
+function endHand(){
+  const w=1-G.folded;
+  G.pot+=G.bets[0]+G.bets[1]; G.bets=[0,0];
+  G.chips[w]+=G.pot;
+  G.msg=`🏆 ${G.names[w]} wins ${fmt(G.pot)} — ${G.names[G.folded]} folded`;
+  G.pot=0; G.done=true; G.revealed=-1; save(); render();
+}
+
+function askPass(){
+  G.revealed=-1;
+  $('passTitle').textContent=`Pass to ${G.names[G.toAct]}`;
+  $('bReveal').textContent=`I'm ${G.names[G.toAct]} — show my cards`;
+  $('passScreen').classList.remove('hidden');
+  render();
+}
+
+// ---------- Render ----------
+function cardEl(c, hidden){
+  const d=document.createElement('div');
+  if(hidden){ d.className='card back'; return d; }
+  d.className='card'+(c.s===1||c.s===2?' red':'');
+  d.innerHTML=`<div>${RANKS[c.r]}</div><div class="s">${SUITS[c.s]}</div>`;
+  return d;
+}
+
+function render(){
+  if(!G) return;
+  for(const p of [0,1]){
+    $('p'+p+'name').textContent = G.names[p] + (G.dealer===p?' Ⓓ':'');
+    $('p'+p+'chips').textContent = fmt(G.chips[p]);
+    $('p'+p+'bet').textContent = G.bets[p] ? `Bet: ${fmt(G.bets[p])}` : '';
+    const box=$('p'+p+'cards'); box.innerHTML='';
+    const show = G.revealed===p || (G.done && G.showdown);
+    G.hole[p].forEach(c=>box.appendChild(cardEl(c,!show)));
+    $('p'+p+'box').classList.toggle('active', !G.done && G.toAct===p);
+  }
+  const b=$('board'); b.innerHTML=''; G.board.forEach(c=>b.appendChild(cardEl(c)));
+  $('pot').textContent=`Pot: ${fmt(G.pot+G.bets[0]+G.bets[1])}`;
+  $('blinds').textContent=`Blinds ${fmt(G.sb)} / ${fmt(G.bb)} · Hand #${G.handNum}`;
+  $('log').textContent=G.log||'';
+  $('msg').innerHTML=G.msg||'';
+
+  const ctrl=$('controls');
+  if(G.done){
+    ctrl.classList.add('hidden');
+    if(G.chips[0]===0||G.chips[1]===0){
+      const w=G.chips[0]>0?0:1;
+      $('overTitle').innerHTML=`🏆 ${G.names[w]} wins it all!<br><span class="small">${fmt(G.chips[w])} chips</span>`;
+      setTimeout(()=>$('overScreen').classList.remove('hidden'),1800);
+      $('bNext').classList.add('hidden');
+    } else $('bNext').classList.remove('hidden');
+    return;
+  }
+  $('bNext').classList.add('hidden');
+  ctrl.classList.toggle('hidden', G.revealed!==G.toAct);
+  const p=G.toAct,o=1-p, toCall=Math.min(G.bets[o]-G.bets[p], G.chips[p]);
+  $('bCall').textContent = toCall>0 ? `Call ${fmt(toCall)}` : 'Check';
+  const maxTo = G.bets[p]+G.chips[p];
+  const minTo = Math.min(maxTo, G.bets[o]+Math.max(G.lastRaise,G.bb));
+  const canRaise = G.chips[p]>toCall && G.chips[o]>0;
+  const s=$('raiseSlider'); s.min=minTo; s.max=maxTo; s.step=G.sb;
+  if(+s.value<minTo||+s.value>maxTo) s.value=minTo;
+  $('raiseAmt').textContent=fmt(+s.value);
+  $('bRaise').textContent = (toCall>0||G.street===0) ? 'Raise' : 'Bet';
+  $('bRaise').disabled=!canRaise; s.disabled=!canRaise;
+  document.querySelectorAll('.quick button').forEach(x=>x.disabled=!canRaise);
+  $('bAllin').disabled = G.chips[p]===0;
+}
+
+// ---------- Events ----------
+$('bStart').onclick=()=>{ newGame($('n0').value.trim(),$('n1').value.trim()); $('startScreen').classList.add('hidden'); };
+$('bResume').onclick=()=>{ G=load(); $('startScreen').classList.add('hidden'); if(G.done) render(); else askPass(); };
+$('bReveal').onclick=()=>{ G.revealed=G.toAct; $('passScreen').classList.add('hidden'); render(); };
+$('bFold').onclick=()=>act('fold');
+$('bCall').onclick=()=>act('call');
+$('bRaise').onclick=()=>act('raise', +$('raiseSlider').value);
+$('bAllin').onclick=()=>{ const p=G.toAct; const to=G.bets[p]+G.chips[p]; if(to<=G.bets[1-p]) act('call'); else act('raise',to); };
+$('raiseSlider').oninput=e=>$('raiseAmt').textContent=fmt(+e.target.value);
+document.querySelectorAll('.quick button').forEach(btn=>btn.onclick=()=>{
+  const p=G.toAct,o=1-p; const toCall=G.bets[o]-G.bets[p];
+  const pot=G.pot+G.bets[0]+G.bets[1]+toCall;
+  const s=$('raiseSlider'); let to=G.bets[o]+Math.round(pot*+btn.dataset.f/G.sb)*G.sb;
+  to=Math.max(+s.min,Math.min(+s.max,to)); s.value=to; $('raiseAmt').textContent=fmt(to);
+});
+$('bNext').onclick=()=>{ G.msg=''; newHand(); };
+$('bRestart').onclick=()=>{ $('overScreen').classList.add('hidden'); localStorage.removeItem('motelPoker'); $('startScreen').classList.remove('hidden'); $('bResume').classList.add('hidden'); };
+
+const saved=load();
+if(saved && saved.chips && saved.chips[0]>0 && saved.chips[1]>0){ $('bResume').classList.remove('hidden'); $('n0').value=saved.names[0]; $('n1').value=saved.names[1]; }
+</script>
+</body>
+</html>
