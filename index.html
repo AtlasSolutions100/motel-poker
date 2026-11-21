@@ -40,7 +40,8 @@
 </style>
 </head>
 <body>
-<header>♠ MOTEL POKER ♥ <span class="small">Texas Hold'em</span></header>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<header>♠ MOTEL POKER ♥ <span class="small" id="conn"></span></header>
 
 <div class="wrap">
   <div class="player" id="p1box">
@@ -80,21 +81,25 @@
   <div class="log" id="log"></div>
 </div>
 
-<!-- Start screen -->
-<div class="overlay" id="startScreen">
+<!-- Lobby -->
+<div class="overlay" id="lobby">
   <h2>♠ Motel Poker ♦</h2>
-  <div>Heads-up Texas Hold'em<br>1,500,000 chips each</div>
-  <input id="n0" value="Koby" maxlength="12">
-  <input id="n1" value="Mom" maxlength="12">
-  <button id="bStart">Deal 'Em</button>
-  <button id="bResume" class="hidden" style="background:#37474f">Resume Saved Game</button>
-</div>
-
-<!-- Pass screen -->
-<div class="overlay hidden" id="passScreen">
-  <h2 id="passTitle">Pass to Mom</h2>
-  <div class="small">No peeking 👀</div>
-  <button id="bReveal">I'm Mom — show my cards</button>
+  <div>Heads-up Texas Hold'em · 1,500,000 chips each</div>
+  <div id="hostUI">
+    <input id="myName" value="Koby" maxlength="12"><br><br>
+    <button id="bHost">Start a Table</button>
+  </div>
+  <div id="joinUI" class="hidden">
+    <input id="joinName" value="Mom" maxlength="12"><br><br>
+    <button id="bJoin">Join the Table</button>
+  </div>
+  <div id="shareUI" class="hidden">
+    <div>Text this link to your opponent:</div>
+    <input id="shareLink" readonly style="width:100%;font-size:14px">
+    <br><br><button id="bCopy">Copy Link</button>
+    <div class="small" style="margin-top:12px">Waiting for them to join…</div>
+  </div>
+  <div class="small" id="lobbyStatus"></div>
 </div>
 
 <!-- Game over -->
@@ -174,9 +179,7 @@ function newHand(){
   G.toAct = sbP; G.acted=[false,false]; G.lastRaise = G.bb;
   G.log = `Hand #${G.handNum} — ${G.names[sbP]} posts ${fmt(G.sb)}, ${G.names[bbP]} posts ${fmt(G.bb)}`;
   G.msg='';
-  G.revealed = -1;
-  checkAutoRunout() || askPass();
-  save();
+  checkAutoRunout() || sync();
 }
 
 function post(p, amt){ amt=Math.min(amt,G.chips[p]); G.chips[p]-=amt; G.bets[p]+=amt; G.contrib[p]+=amt; }
@@ -200,8 +203,7 @@ function act(type, amount){
             || (G.chips[p]===0 && G.bets[p]<=G.bets[o])
             || (G.chips[o]===0 && G.bets[p]>=G.bets[o]);
   if(over) nextStreet();
-  else { G.toAct=o; askPass(); }
-  save();
+  else { G.toAct=o; sync(); }
 }
 
 function nextStreet(){
@@ -217,7 +219,7 @@ function nextStreet(){
   else return showdown();
   if(checkAutoRunout()) return;
   G.toAct = 1-G.dealer; // BB acts first postflop
-  askPass();
+  sync();
 }
 
 function checkAutoRunout(){
@@ -240,7 +242,7 @@ function showdown(){
   if(c>0){ G.chips[0]+=G.pot; G.msg=`🏆 ${G.names[0]} wins ${fmt(G.pot)} with ${handName(v0)}<br><span class="small">${G.names[1]}: ${handName(v1)}</span>`; }
   else if(c<0){ G.chips[1]+=G.pot; G.msg=`🏆 ${G.names[1]} wins ${fmt(G.pot)} with ${handName(v1)}<br><span class="small">${G.names[0]}: ${handName(v0)}</span>`; }
   else { const h=Math.floor(G.pot/2); G.chips[0]+=h; G.chips[1]+=G.pot-h; G.msg=`🤝 Split pot — both have ${handName(v0)}`; }
-  G.pot=0; G.done=true; G.revealed=-1; save(); render();
+  G.pot=0; G.done=true; sync();
 }
 
 function endHand(){
@@ -248,16 +250,76 @@ function endHand(){
   G.pot+=G.bets[0]+G.bets[1]; G.bets=[0,0];
   G.chips[w]+=G.pot;
   G.msg=`🏆 ${G.names[w]} wins ${fmt(G.pot)} — ${G.names[G.folded]} folded`;
-  G.pot=0; G.done=true; G.revealed=-1; save(); render();
+  G.pot=0; G.done=true; sync();
 }
 
-function askPass(){
-  G.revealed=-1;
-  $('passTitle').textContent=`Pass to ${G.names[G.toAct]}`;
-  $('bReveal').textContent=`I'm ${G.names[G.toAct]} — show my cards`;
-  $('passScreen').classList.remove('hidden');
-  render();
+// ---------- Networking ----------
+const params=new URLSearchParams(location.search);
+const ROOM=params.get('room');
+const isHost=!ROOM;
+const me=isHost?0:1;
+let peer=null, conn=null;
+
+function view(g, seat){
+  const v=JSON.parse(JSON.stringify(g)); delete v.deck;
+  if(!(g.done&&g.showdown)) v.hole[1-seat]=null;
+  return v;
 }
+function sync(){
+  save(); render(G);
+  if(isHost && conn && conn.open) conn.send({t:'state', g:view(G,1)});
+}
+function setConn(t){ $('conn').textContent=t; }
+
+function hostTable(name){
+  let id=null; try{ id=localStorage.getItem('motelPokerRoom'); }catch(e){}
+  if(!id){ id='motelpoker-'+Math.random().toString(36).slice(2,8); try{localStorage.setItem('motelPokerRoom',id);}catch(e){} }
+  peer=new Peer(id);
+  peer.on('open',()=>{
+    const link=location.origin+location.pathname+'?room='+id;
+    $('shareLink').value=link;
+    $('hostUI').classList.add('hidden'); $('shareUI').classList.remove('hidden');
+    setConn('· waiting for opponent');
+    const saved=load();
+    if(saved && saved.chips[0]>0 && saved.chips[1]>0 && saved.room===id){ G=saved; G.names[0]=name||G.names[0]; }
+    else { newGame(name,'Opponent'); G.room=id; }
+  });
+  peer.on('connection',c=>{
+    conn=c;
+    c.on('open',()=>{ setConn('· connected ✅'); $('lobby').classList.add('hidden'); sync(); });
+    c.on('data',m=>{
+      if(m.t==='hello'){ G.names[1]=m.name||G.names[1]; sync(); }
+      if(m.t==='act' && !G.done && G.toAct===1) act(m.type,m.amt);
+      if(m.t==='next' && G.done && G.chips[0]>0 && G.chips[1]>0){ G.msg=''; newHand(); }
+      if(m.t==='restart'){ restart(); }
+    });
+    c.on('close',()=>setConn('· opponent disconnected — they can reopen the link'));
+  });
+  peer.on('disconnected',()=>{ setConn('· reconnecting…'); setTimeout(()=>peer.reconnect(),1000); });
+  peer.on('error',e=>{
+    if(e.type==='unavailable-id'){ $('lobbyStatus').textContent='Reclaiming your table…'; setTimeout(()=>{peer.destroy();hostTable(name);},3000); }
+    else $('lobbyStatus').textContent='Connection issue: '+e.type+' — try again';
+  });
+}
+
+function joinTable(name){
+  $('lobbyStatus').textContent='Connecting…';
+  peer=new Peer();
+  peer.on('open',()=>{
+    conn=peer.connect(ROOM,{reliable:true});
+    conn.on('open',()=>{ setConn('· connected ✅'); conn.send({t:'hello',name}); $('lobby').classList.add('hidden'); });
+    conn.on('data',m=>{ if(m.t==='state'){ G=m.g; render(G); } });
+    conn.on('close',()=>{ setConn('· disconnected — reconnecting…'); setTimeout(()=>{ peer.destroy(); joinTable(name); },2000); });
+  });
+  peer.on('error',e=>{
+    $('lobbyStatus').textContent = e.type==='peer-unavailable' ? 'Table not open yet — make sure the host has the game open. Retrying…' : 'Connection issue: '+e.type+'. Retrying…';
+    setTimeout(()=>{ peer.destroy(); joinTable(name); },3000);
+  });
+}
+
+function send(m){ if(conn&&conn.open) conn.send(m); }
+function doAct(type,amt){ if(isHost){ if(G.toAct===0&&!G.done) act(type,amt); } else send({t:'act',type,amt}); }
+function restart(){ const n=G.names; $('overScreen').classList.add('hidden'); newGame(n[0],n[1]); G.room=ROOM||G.room; sync(); }
 
 // ---------- Render ----------
 function cardEl(c, hidden){
@@ -268,17 +330,19 @@ function cardEl(c, hidden){
   return d;
 }
 
-function render(){
-  if(!G) return;
+function render(V){
+  V=V||G; if(!V) return;
   for(const p of [0,1]){
-    $('p'+p+'name').textContent = G.names[p] + (G.dealer===p?' Ⓓ':'');
-    $('p'+p+'chips').textContent = fmt(G.chips[p]);
-    $('p'+p+'bet').textContent = G.bets[p] ? `Bet: ${fmt(G.bets[p])}` : '';
-    const box=$('p'+p+'cards'); box.innerHTML='';
-    const show = G.revealed===p || (G.done && G.showdown);
-    G.hole[p].forEach(c=>box.appendChild(cardEl(c,!show)));
-    $('p'+p+'box').classList.toggle('active', !G.done && G.toAct===p);
+    const slot = p===me ? 'p0' : 'p1';
+    $(slot+'name').textContent = V.names[p] + (p===me?' (you)':'') + (V.dealer===p?' Ⓓ':'');
+    $(slot+'chips').textContent = fmt(V.chips[p]);
+    $(slot+'bet').textContent = V.bets[p] ? `Bet: ${fmt(V.bets[p])}` : '';
+    const box=$(slot+'cards'); box.innerHTML='';
+    const show = V.hole[p] && (p===me || (V.done && V.showdown));
+    [0,1].forEach(i=>box.appendChild(cardEl(V.hole[p]&&V.hole[p][i], !show)));
+    $(slot+'box').classList.toggle('active', !V.done && V.toAct===p);
   }
+  const G=V;
   const b=$('board'); b.innerHTML=''; G.board.forEach(c=>b.appendChild(cardEl(c)));
   $('pot').textContent=`Pot: ${fmt(G.pot+G.bets[0]+G.bets[1])}`;
   $('blinds').textContent=`Blinds ${fmt(G.sb)} / ${fmt(G.bb)} · Hand #${G.handNum}`;
@@ -297,7 +361,8 @@ function render(){
     return;
   }
   $('bNext').classList.add('hidden');
-  ctrl.classList.toggle('hidden', G.revealed!==G.toAct);
+  ctrl.classList.toggle('hidden', G.toAct!==me);
+  if(G.toAct!==me) $('msg').innerHTML = G.msg || `Waiting for ${G.names[G.toAct]}…`;
   const p=G.toAct,o=1-p, toCall=Math.min(G.bets[o]-G.bets[p], G.chips[p]);
   $('bCall').textContent = toCall>0 ? `Call ${fmt(toCall)}` : 'Check';
   const maxTo = G.bets[p]+G.chips[p];
@@ -313,13 +378,10 @@ function render(){
 }
 
 // ---------- Events ----------
-$('bStart').onclick=()=>{ newGame($('n0').value.trim(),$('n1').value.trim()); $('startScreen').classList.add('hidden'); };
-$('bResume').onclick=()=>{ G=load(); $('startScreen').classList.add('hidden'); if(G.done) render(); else askPass(); };
-$('bReveal').onclick=()=>{ G.revealed=G.toAct; $('passScreen').classList.add('hidden'); render(); };
-$('bFold').onclick=()=>act('fold');
-$('bCall').onclick=()=>act('call');
-$('bRaise').onclick=()=>act('raise', +$('raiseSlider').value);
-$('bAllin').onclick=()=>{ const p=G.toAct; const to=G.bets[p]+G.chips[p]; if(to<=G.bets[1-p]) act('call'); else act('raise',to); };
+$('bFold').onclick=()=>doAct('fold');
+$('bCall').onclick=()=>doAct('call');
+$('bRaise').onclick=()=>doAct('raise', +$('raiseSlider').value);
+$('bAllin').onclick=()=>{ const p=G.toAct; const to=G.bets[p]+G.chips[p]; if(to<=G.bets[1-p]) doAct('call'); else doAct('raise',to); };
 $('raiseSlider').oninput=e=>$('raiseAmt').textContent=fmt(+e.target.value);
 document.querySelectorAll('.quick button').forEach(btn=>btn.onclick=()=>{
   const p=G.toAct,o=1-p; const toCall=G.bets[o]-G.bets[p];
@@ -327,11 +389,13 @@ document.querySelectorAll('.quick button').forEach(btn=>btn.onclick=()=>{
   const s=$('raiseSlider'); let to=G.bets[o]+Math.round(pot*+btn.dataset.f/G.sb)*G.sb;
   to=Math.max(+s.min,Math.min(+s.max,to)); s.value=to; $('raiseAmt').textContent=fmt(to);
 });
-$('bNext').onclick=()=>{ G.msg=''; newHand(); };
-$('bRestart').onclick=()=>{ $('overScreen').classList.add('hidden'); localStorage.removeItem('motelPoker'); $('startScreen').classList.remove('hidden'); $('bResume').classList.add('hidden'); };
-
-const saved=load();
-if(saved && saved.chips && saved.chips[0]>0 && saved.chips[1]>0){ $('bResume').classList.remove('hidden'); $('n0').value=saved.names[0]; $('n1').value=saved.names[1]; }
+$('bNext').onclick=()=>{ if(isHost){ G.msg=''; newHand(); } else send({t:'next'}); };
+$('bRestart').onclick=()=>{ if(isHost) restart(); else { send({t:'restart'}); $('overScreen').classList.add('hidden'); } };
+$('bHost').onclick=()=>{ $('bHost').disabled=true; $('lobbyStatus').textContent='Opening table…'; hostTable($('myName').value.trim()); };
+$('bJoin').onclick=()=>{ $('bJoin').disabled=true; joinTable($('joinName').value.trim()); };
+$('bCopy').onclick=async()=>{ const l=$('shareLink'); try{ if(navigator.share){ await navigator.share({title:'Motel Poker',text:'Join my poker table!',url:l.value}); return; } await navigator.clipboard.writeText(l.value); $('bCopy').textContent='Copied!'; }catch(e){ l.select(); } };
+if(!isHost){ $('hostUI').classList.add('hidden'); $('joinUI').classList.remove('hidden'); }
+else { const sv=load(); if(sv&&sv.names) $('myName').value=sv.names[0]; }
 </script>
 </body>
 </html>
