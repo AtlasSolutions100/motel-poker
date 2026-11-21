@@ -40,7 +40,7 @@
 </style>
 </head>
 <body>
-<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.15.2/dist/mqtt.min.js"></script>
 <header>♠ MOTEL POKER ♥ <span class="small" id="conn"></span></header>
 
 <div class="wrap">
@@ -97,7 +97,7 @@
     <div>Text this link to your opponent:</div>
     <input id="shareLink" readonly style="width:100%;font-size:14px">
     <br><br><button id="bCopy">Copy Link</button>
-    <div class="small" style="margin-top:12px">Waiting for them to join…</div>
+    <div class="small" style="margin-top:12px">The game starts as soon as they tap Join.</div>
   </div>
   <div class="small" id="lobbyStatus"></div>
 </div>
@@ -253,72 +253,84 @@ function endHand(){
   G.pot=0; G.done=true; sync();
 }
 
-// ---------- Networking ----------
+// ---------- Networking (relay via public MQTT brokers; uses all at once for reliability) ----------
 const params=new URLSearchParams(location.search);
 const ROOM=params.get('room');
 const isHost=!ROOM;
 const me=isHost?0:1;
-let peer=null, conn=null;
+const BROKERS=['wss://broker.hivemq.com:8884/mqtt','wss://broker.emqx.io:8084/mqtt','wss://test.mosquitto.org:8081'];
+let clients=[], room=null, guestSeen=false, lastSeq=-1, myName='';
+const SID=Math.random().toString(36).slice(2,8); let msgN=0; const seen=new Set();
 
 function view(g, seat){
   const v=JSON.parse(JSON.stringify(g)); delete v.deck;
   if(!(g.done&&g.showdown)) v.hole[1-seat]=null;
   return v;
 }
+function pub(topic, obj, retain){
+  const p=JSON.stringify(obj);
+  clients.forEach(c=>{ if(c.connected) c.publish(topic,p,{qos:1,retain:!!retain}); });
+}
 function sync(){
-  save(); render(G);
-  if(isHost && conn && conn.open) conn.send({t:'state', g:view(G,1)});
+  if(isHost){ G.seq=Math.max(Date.now(),(G.seq||0)+1); save(); render(G); if(room) pub(`motelpoker/${room}/s`, view(G,1), true); }
+  else render(G);
 }
 function setConn(t){ $('conn').textContent=t; }
+function liveCount(){ return clients.filter(c=>c.connected).length; }
+
+function connectAll(onMsg, onUp){
+  if(typeof mqtt==='undefined'){ $('lobbyStatus').textContent='Could not load the game connection. Check your internet and refresh.'; return; }
+  clients=BROKERS.map(url=>{
+    const c=mqtt.connect(url,{clientId:'mp_'+SID+'_'+Math.random().toString(36).slice(2,6),reconnectPeriod:2000,connectTimeout:8000,clean:true});
+    c.on('connect',()=>{ onUp(c); setConn(guestSeen||!isHost?'· connected ✅':'· online'); });
+    c.on('message',(t,payload)=>{ try{ onMsg(t, JSON.parse(payload.toString())); }catch(e){} });
+    c.on('offline',()=>{ if(!liveCount()) setConn('· reconnecting…'); });
+    c.on('error',()=>{});
+    return c;
+  });
+}
 
 function hostTable(name){
-  let id=null; try{ id=localStorage.getItem('motelPokerRoom'); }catch(e){}
-  if(!id){ id='motelpoker-'+Math.random().toString(36).slice(2,8); try{localStorage.setItem('motelPokerRoom',id);}catch(e){} }
-  peer=new Peer(id);
-  peer.on('open',()=>{
-    const link=location.origin+location.pathname+'?room='+id;
-    $('shareLink').value=link;
-    $('hostUI').classList.add('hidden'); $('shareUI').classList.remove('hidden');
-    setConn('· waiting for opponent');
-    const saved=load();
-    if(saved && saved.chips[0]>0 && saved.chips[1]>0 && saved.room===id){ G=saved; G.names[0]=name||G.names[0]; }
-    else { newGame(name,'Opponent'); G.room=id; }
-  });
-  peer.on('connection',c=>{
-    conn=c;
-    c.on('open',()=>{ setConn('· connected ✅'); $('lobby').classList.add('hidden'); sync(); });
-    c.on('data',m=>{
-      if(m.t==='hello'){ G.names[1]=m.name||G.names[1]; sync(); }
-      if(m.t==='act' && !G.done && G.toAct===1) act(m.type,m.amt);
-      if(m.t==='next' && G.done && G.chips[0]>0 && G.chips[1]>0){ G.msg=''; newHand(); }
-      if(m.t==='restart'){ restart(); }
-    });
-    c.on('close',()=>setConn('· opponent disconnected — they can reopen the link'));
-  });
-  peer.on('disconnected',()=>{ setConn('· reconnecting…'); setTimeout(()=>peer.reconnect(),1000); });
-  peer.on('error',e=>{
-    if(e.type==='unavailable-id'){ $('lobbyStatus').textContent='Reclaiming your table…'; setTimeout(()=>{peer.destroy();hostTable(name);},3000); }
-    else $('lobbyStatus').textContent='Connection issue: '+e.type+' — try again';
+  let id=null; try{ id=localStorage.getItem('motelPokerRoom2'); }catch(e){}
+  if(!id){ id=Math.random().toString(36).slice(2,10); try{localStorage.setItem('motelPokerRoom2',id);}catch(e){} }
+  room=id;
+  const saved=load();
+  if(saved && saved.chips && saved.chips[0]>0 && saved.chips[1]>0 && saved.room===id){ G=saved; if(name) G.names[0]=name; }
+  else { newGame(name,'Opponent'); G.room=id; save(); }
+  const base=location.href.split('?')[0].split('#')[0];
+  $('shareLink').value=base+'?room='+id;
+  $('hostUI').classList.add('hidden'); $('shareUI').classList.remove('hidden');
+  $('lobbyStatus').textContent='Connecting to game server…';
+  connectAll((t,m)=>{
+    if(!m || !m.id || seen.has(m.id)) return; seen.add(m.id);
+    if(!guestSeen){ guestSeen=true; setConn('· connected ✅'); $('lobby').classList.add('hidden'); }
+    if(m.t==='hello'){ if(m.name) G.names[1]=m.name; sync(); }
+    if(m.t==='act' && !G.done && G.toAct===1 && m.hand===G.handNum) act(m.type,m.amt);
+    if(m.t==='next' && G.done && G.chips[0]>0 && G.chips[1]>0 && m.hand===G.handNum){ G.msg=''; newHand(); }
+    if(m.t==='restart'){ restart(); }
+  }, c=>{
+    c.subscribe(`motelpoker/${room}/g`,{qos:1});
+    $('lobbyStatus').textContent='Table is open ✅ — waiting for opponent';
+    c.publish(`motelpoker/${room}/s`, JSON.stringify(view(G,1)), {qos:1,retain:true});
   });
 }
 
 function joinTable(name){
+  myName=name; room=ROOM;
   $('lobbyStatus').textContent='Connecting…';
-  peer=new Peer();
-  peer.on('open',()=>{
-    conn=peer.connect(ROOM,{reliable:true});
-    conn.on('open',()=>{ setConn('· connected ✅'); conn.send({t:'hello',name}); $('lobby').classList.add('hidden'); });
-    conn.on('data',m=>{ if(m.t==='state'){ G=m.g; render(G); } });
-    conn.on('close',()=>{ setConn('· disconnected — reconnecting…'); setTimeout(()=>{ peer.destroy(); joinTable(name); },2000); });
-  });
-  peer.on('error',e=>{
-    $('lobbyStatus').textContent = e.type==='peer-unavailable' ? 'Table not open yet — make sure the host has the game open. Retrying…' : 'Connection issue: '+e.type+'. Retrying…';
-    setTimeout(()=>{ peer.destroy(); joinTable(name); },3000);
+  connectAll((t,m)=>{
+    if(!m || !m.names) return;
+    if((m.seq||0)<lastSeq) return; lastSeq=m.seq||0;
+    G=m; $('lobby').classList.add('hidden'); render(G);
+  }, c=>{
+    c.subscribe(`motelpoker/${room}/s`,{qos:1});
+    $('lobbyStatus').textContent='Connected — finding the table…';
+    send({t:'hello',name:myName});
   });
 }
 
-function send(m){ if(conn&&conn.open) conn.send(m); }
-function doAct(type,amt){ if(isHost){ if(G.toAct===0&&!G.done) act(type,amt); } else send({t:'act',type,amt}); }
+function send(m){ m.id=SID+'-'+(msgN++); pub(`motelpoker/${room}/g`, m, false); }
+function doAct(type,amt){ if(isHost){ if(G.toAct===0&&!G.done) act(type,amt); } else send({t:'act',type,amt,hand:G.handNum}); }
 function restart(){ const n=G.names; $('overScreen').classList.add('hidden'); newGame(n[0],n[1]); G.room=ROOM||G.room; sync(); }
 
 // ---------- Render ----------
@@ -389,10 +401,11 @@ document.querySelectorAll('.quick button').forEach(btn=>btn.onclick=()=>{
   const s=$('raiseSlider'); let to=G.bets[o]+Math.round(pot*+btn.dataset.f/G.sb)*G.sb;
   to=Math.max(+s.min,Math.min(+s.max,to)); s.value=to; $('raiseAmt').textContent=fmt(to);
 });
-$('bNext').onclick=()=>{ if(isHost){ G.msg=''; newHand(); } else send({t:'next'}); };
+$('bNext').onclick=()=>{ if(isHost){ G.msg=''; newHand(); } else send({t:'next',hand:G.handNum}); };
 $('bRestart').onclick=()=>{ if(isHost) restart(); else { send({t:'restart'}); $('overScreen').classList.add('hidden'); } };
 $('bHost').onclick=()=>{ $('bHost').disabled=true; $('lobbyStatus').textContent='Opening table…'; hostTable($('myName').value.trim()); };
 $('bJoin').onclick=()=>{ $('bJoin').disabled=true; joinTable($('joinName').value.trim()); };
+setInterval(()=>{ if(!isHost && room && liveCount()===0) setConn('· reconnecting…'); },3000);
 $('bCopy').onclick=async()=>{ const l=$('shareLink'); try{ if(navigator.share){ await navigator.share({title:'Motel Poker',text:'Join my poker table!',url:l.value}); return; } await navigator.clipboard.writeText(l.value); $('bCopy').textContent='Copied!'; }catch(e){ l.select(); } };
 if(!isHost){ $('hostUI').classList.add('hidden'); $('joinUI').classList.remove('hidden'); }
 else { const sv=load(); if(sv&&sv.names) $('myName').value=sv.names[0]; }
